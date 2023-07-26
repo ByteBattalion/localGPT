@@ -63,7 +63,6 @@ DB = Chroma(
 
 RETRIEVER = DB.as_retriever()
 
-
 # load the LLM for generating Natural Language responses
 def load_model(device_type, model_id, model_basename=None):
     """

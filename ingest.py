@@ -116,7 +116,13 @@ def split_documents(documents: list[Document]) -> tuple[list[Document], list[Doc
     ),
     help="Device to run on. (Default is cuda)",
 )
-def main(device_type):
+@click.option(
+    "--vector_db_name",
+    default="DB",
+    type=str,
+    help="Name of the vector database. (Default is 'DB')",
+)
+def main(device_type, vector_db_name):
     # Load documents and split in chunks
     logging.info(f"Loading documents from {SOURCE_DIRECTORY}")
     documents = load_documents(SOURCE_DIRECTORY)
@@ -142,10 +148,12 @@ def main(device_type):
 
     # embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
 
+    DB_DIRECTORY = os.path.join(os.getcwd(), vector_db_name)
+    logging.info(f"------------------------{DB_DIRECTORY}------------------------")
     db = Chroma.from_documents(
         texts,
         embeddings,
-        persist_directory=PERSIST_DIRECTORY,
+        persist_directory=DB_DIRECTORY,
         client_settings=CHROMA_SETTINGS,
     )
     db.persist()
