@@ -4,6 +4,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 
 import click
 import torch
+import chromadb
 from langchain.docstore.document import Document
 from langchain.embeddings import HuggingFaceInstructEmbeddings
 from langchain.text_splitter import Language, RecursiveCharacterTextSplitter
@@ -17,7 +18,6 @@ from constants import (
     PERSIST_DIRECTORY,
     SOURCE_DIRECTORY,
 )
-
 
 def load_single_document(file_path: str) -> Document:
     # Loads a single document from a file path
@@ -42,7 +42,16 @@ def load_document_batch(filepaths):
         return (data_list, filepaths)
 
 
-def load_documents(source_dir: str) -> list[Document]:
+def load_documents(source_dir: str, file_name: str = None) -> list[Document]:
+    # If a filename is provided, only attempt to load that file
+    if file_name is not None:
+        file_extension = os.path.splitext(file_name)[1]
+        source_file_path = os.path.join(source_dir, file_name)
+        if file_extension in DOCUMENT_MAP.keys():
+            return [load_single_document(source_file_path)]
+        else:
+            raise ValueError(f"Document type of {file_name} is undefined")
+    
     # Loads all documents from the source documents directory
     all_files = os.listdir(source_dir)
     paths = []
@@ -117,15 +126,27 @@ def split_documents(documents: list[Document]) -> tuple[list[Document], list[Doc
     help="Device to run on. (Default is cuda)",
 )
 @click.option(
-    "--vector_db_name",
+    "--vector_db",
     default="DB",
     type=str,
     help="Name of the vector database. (Default is 'DB')",
 )
-def main(device_type, vector_db_name):
+@click.option(
+    "--file_name",
+    default=None,
+    type=str,
+    help="Name of the specific file to load from source directory. If not provided, all documents will be loaded.",
+)
+@click.option(
+    "--source_directory",
+    default="SOURCE_DOCUMENTS",
+    type=str,
+    help="Name of the specific source directory. If not provided, all documents from SOURCE_DOCUMENTS will be loaded.",
+)
+def main(device_type, vector_db, file_name, source_directory):
     # Load documents and split in chunks
-    logging.info(f"Loading documents from {SOURCE_DIRECTORY}")
-    documents = load_documents(SOURCE_DIRECTORY)
+    logging.info(f"Loading documents from {source_directory}")
+    documents = load_documents(source_directory, file_name)
     text_documents, python_documents = split_documents(documents)
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     python_splitter = RecursiveCharacterTextSplitter.from_language(
@@ -133,7 +154,7 @@ def main(device_type, vector_db_name):
     )
     texts = text_splitter.split_documents(text_documents)
     texts.extend(python_splitter.split_documents(python_documents))
-    logging.info(f"Loaded {len(documents)} documents from {SOURCE_DIRECTORY}")
+    logging.info(f"Loaded {len(documents)} documents from {source_directory}")
     logging.info(f"Split into {len(texts)} chunks of text")
 
     # Create embeddings
@@ -148,13 +169,15 @@ def main(device_type, vector_db_name):
 
     # embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
 
-    DB_DIRECTORY = os.path.join(os.getcwd(), vector_db_name)
-    logging.info(f"------------------------{DB_DIRECTORY}------------------------")
+    DB_DIRECTORY = vector_db
+    local_settings = CHROMA_SETTINGS.copy()
+    local_settings.persist_directory = DB_DIRECTORY
+
     db = Chroma.from_documents(
         texts,
         embeddings,
         persist_directory=DB_DIRECTORY,
-        client_settings=CHROMA_SETTINGS,
+        client_settings=local_settings,
     )
     db.persist()
     db = None

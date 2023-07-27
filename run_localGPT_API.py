@@ -6,8 +6,10 @@ import subprocess
 import torch
 from auto_gptq import AutoGPTQForCausalLM
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 from langchain.chains import RetrievalQA
 from langchain.embeddings import HuggingFaceInstructEmbeddings
+from collections import defaultdict
 
 # from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.llms import HuggingFacePipeline
@@ -26,42 +28,15 @@ from werkzeug.utils import secure_filename
 
 from constants import CHROMA_SETTINGS, EMBEDDING_MODEL_NAME, PERSIST_DIRECTORY
 
+qa_dict = defaultdict(lambda: None)
+retriever_dict = defaultdict(lambda: None)
+
 DEVICE_TYPE = "cuda"
 SHOW_SOURCES = True
 logging.info(f"Running on: {DEVICE_TYPE}")
 logging.info(f"Display Source Documents set to: {SHOW_SOURCES}")
 
 EMBEDDINGS = HuggingFaceInstructEmbeddings(model_name=EMBEDDING_MODEL_NAME, model_kwargs={"device": DEVICE_TYPE})
-
-# uncomment the following line if you used HuggingFaceEmbeddings in the ingest.py
-# EMBEDDINGS = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
-if os.path.exists(PERSIST_DIRECTORY):
-    try:
-        shutil.rmtree(PERSIST_DIRECTORY)
-    except OSError as e:
-        print(f"Error: {e.filename} - {e.strerror}.")
-else:
-    print("The directory does not exist")
-
-run_langest_commands = ["python", "ingest.py"]
-if DEVICE_TYPE == "cpu":
-    run_langest_commands.append("--device_type")
-    run_langest_commands.append(DEVICE_TYPE)
-
-result = subprocess.run(run_langest_commands, capture_output=True)
-if result.returncode != 0:
-    raise FileNotFoundError(
-        "No files were found inside SOURCE_DOCUMENTS, please put a starter file inside before starting the API!"
-    )
-
-# load the vectorstore
-DB = Chroma(
-    persist_directory=PERSIST_DIRECTORY,
-    embedding_function=EMBEDDINGS,
-    client_settings=CHROMA_SETTINGS,
-)
-
-RETRIEVER = DB.as_retriever()
 
 # load the LLM for generating Natural Language responses
 def load_model(device_type, model_id, model_basename=None):
@@ -133,7 +108,7 @@ def load_model(device_type, model_id, model_basename=None):
         "text-generation",
         model=model,
         tokenizer=tokenizer,
-        max_length=2048,
+        max_length=4096,
         temperature=0,
         top_p=0.95,
         repetition_penalty=1.15,
@@ -166,12 +141,8 @@ model_id = "TheBloke/WizardLM-7B-uncensored-GPTQ"
 model_basename = "WizardLM-7B-uncensored-GPTQ-4bit-128g.compat.no-act-order.safetensors"
 LLM = load_model(device_type=DEVICE_TYPE, model_id=model_id, model_basename=model_basename)
 
-QA = RetrievalQA.from_chain_type(
-    llm=LLM, chain_type="stuff", retriever=RETRIEVER, return_source_documents=SHOW_SOURCES
-)
-
 app = Flask(__name__)
-
+CORS(app)
 
 @app.route("/api/delete_source", methods=["GET"])
 def delete_source_route():
@@ -187,6 +158,8 @@ def delete_source_route():
 
 @app.route("/api/save_document", methods=["GET", "POST"])
 def save_document_route():
+    user_id = request.form.get("user_id")
+
     if "document" not in request.files:
         return "No document part", 400
     file = request.files["document"]
@@ -194,8 +167,11 @@ def save_document_route():
         return "No selected file", 400
     if file:
         filename = secure_filename(file.filename)
-        folder_path = "SOURCE_DOCUMENTS"
+        folder_path = os.path.join(get_user_directory(user_id), "documents")
         if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+        elif not True:
+            shutil.rmtree(folder_path)
             os.makedirs(folder_path)
         file_path = os.path.join(folder_path, filename)
         file.save(file_path)
@@ -204,49 +180,88 @@ def save_document_route():
 
 @app.route("/api/run_ingest", methods=["GET"])
 def run_ingest_route():
-    global DB
-    global RETRIEVER
-    global QA
-    try:
-        if os.path.exists(PERSIST_DIRECTORY):
-            try:
-                shutil.rmtree(PERSIST_DIRECTORY)
-            except OSError as e:
-                print(f"Error: {e.filename} - {e.strerror}.")
-        else:
-            print("The directory does not exist")
+    user_id = request.args.get("user_id")
+    print(f"--------------------------{user_id}--------------------------")
 
-        run_langest_commands = ["python", "ingest.py"]
-        if DEVICE_TYPE == "cpu":
-            run_langest_commands.append("--device_type")
-            run_langest_commands.append(DEVICE_TYPE)
+    if user_id:
+        user_directory = get_user_directory(user_id)
+
+        # Check if the user has a documents directory, else return error
+        if not os.path.exists(os.path.join(user_directory, "documents")):
+            return "No document found for this user", 400
+
+        vector_db = os.path.join(user_directory, "vector_db")
+        source_directory = os.path.join(user_directory, "documents")
+
+        try:
+            # If you want to clear the existing vector DB before ingesting new documents, uncomment the following lines
+            if os.path.exists(vector_db):
+                try:
+                    shutil.rmtree(vector_db)
+                except OSError as e:
+                    print(f"Error: {e.filename} - {e.strerror}.")
+            else:
+                 print("The directory does not exist")
+
+            run_langest_commands = ["python", "ingest.py", "--vector_db", vector_db, "--source_directory", source_directory]
+            if DEVICE_TYPE == "cpu":
+                run_langest_commands.append("--device_type")
+                run_langest_commands.append(DEVICE_TYPE)
+
+            result = subprocess.run(run_langest_commands, capture_output=True)
+            if result.returncode != 0:
+                return "Script execution failed: {}".format(result.stderr.decode("utf-8")), 500
+
+            if retriever_dict[user_id]:
+                del retriever_dict[user_id]
+                print("deleted retriever with user id")
             
-        result = subprocess.run(run_langest_commands, capture_output=True)
-        if result.returncode != 0:
-            return "Script execution failed: {}".format(result.stderr.decode("utf-8")), 500
-        # load the vectorstore
-        DB = Chroma(
-            persist_directory=PERSIST_DIRECTORY,
-            embedding_function=EMBEDDINGS,
-            client_settings=CHROMA_SETTINGS,
-        )
-        RETRIEVER = DB.as_retriever()
+            if qa_dict[user_id]:
+                del qa_dict[user_id]
+                print("deleted qa with user id")
 
-        QA = RetrievalQA.from_chain_type(
-            llm=LLM, chain_type="stuff", retriever=RETRIEVER, return_source_documents=SHOW_SOURCES
-        )
-        return "Script executed successfully: {}".format(result.stdout.decode("utf-8")), 200
-    except Exception as e:
-        return f"Error occurred: {str(e)}", 500
-
+            return "Script executed successfully: {}".format(result.stdout.decode("utf-8")), 200
+        except Exception as e:
+            return f"Error occurred: {str(e)}", 500
+    else:
+        return "No user id received", 400
+    
 
 @app.route("/api/prompt_route", methods=["GET", "POST"])
 def prompt_route():
-    global QA
     user_prompt = request.form.get("user_prompt")
-    if user_prompt:
-        # print(f'User Prompt: {user_prompt}')
-        # Get the answer from the chain
+    user_id = request.form.get("user_id")
+    
+    if user_prompt and user_id:
+        user_directory = os.path.join(get_user_directory(user_id), "vector_db")
+
+        # Check if the user has a vector DB, else return error
+        if not os.path.exists(user_directory):
+            return "No document found for this user", 400
+
+        # Check if a retriever instance for this user already exists, if not create one
+        if not retriever_dict[user_id]:
+            
+            local_settings = CHROMA_SETTINGS.copy()
+            local_settings.persist_directory = user_directory
+
+            DB = Chroma(
+                persist_directory=user_directory,
+                embedding_function=EMBEDDINGS,
+                client_settings=local_settings,
+            )
+            RETRIEVER = DB.as_retriever()
+            retriever_dict[user_id] = RETRIEVER
+
+        # Check if a QA instance for this user already exists, if not create one
+        if not qa_dict[user_id]:
+            qa_dict[user_id] = RetrievalQA.from_chain_type(
+                llm=LLM, chain_type="stuff", retriever=retriever_dict[user_id], return_source_documents=SHOW_SOURCES
+            )
+
+        # Now use the QA instance from the dictionary
+        QA = qa_dict[user_id]
+
         res = QA(user_prompt)
         answer, docs = res["result"], res["source_documents"]
 
@@ -265,6 +280,9 @@ def prompt_route():
     else:
         return "No user prompt received", 400
 
+def get_user_directory(user_id):
+    base_directory = f"user_directory/{user_id}"
+    return base_directory
 
 if __name__ == "__main__":
     logging.basicConfig(
