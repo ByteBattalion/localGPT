@@ -137,6 +137,10 @@ def load_model(device_type, model_id, model_basename=None):
 # Requires ~21GB VRAM. Using STransformers alongside can potentially create OOM on 24GB cards.
 # model_id = "TheBloke/wizardLM-7B-GPTQ"
 # model_basename = "wizardLM-7B-GPTQ-4bit.compat.no-act-order.safetensors"
+# ----------------
+# model_id = "TheBloke/WizardLM-13B-V1.0-Uncensored-GPTQ"
+# model_basename = "wizardlm-13b-v1.0-uncensored-GPTQ-4bit-128g.no-act.order.safetensors"
+# ----------------
 model_id = "TheBloke/WizardLM-7B-uncensored-GPTQ"
 model_basename = "WizardLM-7B-uncensored-GPTQ-4bit-128g.compat.no-act-order.safetensors"
 LLM = load_model(device_type=DEVICE_TYPE, model_id=model_id, model_basename=model_basename)
